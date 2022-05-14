@@ -1,0 +1,124 @@
+---
+title: 'Multi100: Reanalysis of "Time horizon and cooperation in continuous time"'
+author: "Maarten Speekenbrink"
+date: '2022-05-12'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+```
+Here, we re-analyse data to assess evidence for the following claim:
+
+> ...in the short duration treatments, cooperation rates are significantly higher with a deterministic horizon than with a stochastic horizon (p 596)
+
+# Design
+
+The study has a design where two groups of 24 participants are assigned to each of 5 conditions. The conditions are: Short-Deterministic, Short-Stochastic, Long-Deterministic, Long-Stochastic, and Variable-Deterministic. The latter condition is not included in most analyses, where the experiment is treated as a 2 (Length: Long, Short) by 2 (Horizon: Deterministic, Stochastic) between-subjects design. 
+
+Within each group, each participant was paired with each other participant to play 23 continuous-time Prisoner's Dilemmas. To assess the main claim, the main variable of interest is the cooperation rate, which is the proportion of time a player chooses the cooperative action. 
+
+# Data
+
+The supplementary materials provide several datasets. The "originals" folder contains 12 (tab delimited) excel sheets for each session. The "elaborations" folder contains processed data in `.dta` (STATA) format, and STATA scripts for the analysis. The folder "strategies" also contains processed data, and MATLAB files for analysing strategies.
+
+Although it might have been best to use the data from the "originals" folder, due to time constraints, I have chosen to use the `subjects_data_ready.dta` file in the "elaborations" folder, in the first instance. 
+
+```{r read-data}
+# table with conditions
+pdat <- haven::read_dta("replication_files/elaborations/subjects_data_ready.dta")
+pdat <- pdat %>%
+  group_by(condition, session) %>%
+  filter(row_number() == 1) %>%
+  arrange(session) %>%
+  select(condition, session)
+# data to use 
+dat <- haven::read_dta("replication_files/elaborations/data.dta")
+head(dat)
+```
+
+Unfortunately, there is no codebook to go along with the data, so I have to guess what the variables refer too. 
+
+```{processing-data}
+dat <- dat %>%
+  filter(treatment == 5) %>%
+  mutate(session = as.numeric(factor(session)))
+
+# take condition from other file
+dat$condition <- pdat$condition[as.numeric(dat$session)]
+# can check correspondence by
+# haven::read_dta("replication_files/elaborations/subjects_data_ready.dta") %>% group_by(condition) %>% summarise(perf = mean(coop_frequency))
+# dat %>% group_by(condition) %>% summarise(perf = mean(coop_frequency))
+
+# unique IDs
+dat$u_participant <- interaction(dat$Subject, dat$session)
+dat$u_partner <- interaction(dat$partner, dat$session)
+```
+
+# Main analysis plan
+
+I deemed a linear mixed-effects model to be the most suitable for the data, with fixed effects for game duration (short vs long) and horizon (deterministic vs stochastic). As rates of cooperation likely depend on both players in a supergame, and because we have multiple observations for both players, it makes sense to include (crossed) random effects for both. As cooperation frequency is a percentage, it seems reasonable to use an arc-sine transformation before assuming Normally distributed residuals.
+
+$$Y_{ij} = \beta_0 + \gamma_{i} + \gamma_{j} + \beta_d \texttt{duration}_i + \beta_h \texttt{horizon}_i + \beta_{dh} (\texttt{duration} \times \texttt{horizon})_i + \epsilon_{ij}$$
+where $Y_{ij}$ is the arcsine transformed cooperation rate in a game where participant $i$ plays with partner $j$ (both unique identifiers for participants over sessions), and $\gamma_i$, $\gamma_j$, and $\epsilon_{ij}$ are independently Normally distributed.
+
+I believe this model strikes a reasonable balance between simplicity and allowing for straightforward conclusions, as well as respecting the somewhat complicated design of the study. The main claim to be tested is based on a comparison within the short-duration conditions. I will use contrast analysis (with the `emmeans` package) to test for the effect of Horizon within the Short Length conditions, in order to assess this main claim. 
+
+# Additional analyses
+
+The analysis in the paper includes a large number of covariates. How some of these were measured or determined is at times not immediately obvious. For some categorical variables (e.g. _Field of study_), some levels are combined (e.g. medicine with science and engineering) without a clear justification. Some variables have missing values, which are seemingly resolved by adding "missing" as an additional level. According to Table B.II in the Supplementary Material, most of these covariates don't significantly affect the cooperation rates, although as a set these may still prove useful. As an additional analysis, I expand on the main model above by adding fixed effects for age, sex, education 
+
+
+
+To account for changes over the 23 games, we will include a linear and quadratic effect of game nr, centered on the middle game (nr 12). I will aim for a "maximal" model, which includes correlated random intercepts and slopes for the linear and quadratic effect of game by participant and by group (crossed). The fixed effects will be length (short -1, long: 1), horizon (deterministic: 1, stochastic: -1), linear game, and quadratic game, with pairwise interactions between Length, Horizon, and Game (linear or quadratic). If the model is too complex to allow for convergence, I will first remove correlations between random effects, and if this does not resolve the issue, I will remove random effects. Once a suitable random-effects model is estimated, I will use contrast analysis (with the `emmeans` package) to test for the effect of Horizon within the Short Length conditions, in order to assess the main claim. 
+
+# Main analysis
+
+```{r main-analysis}
+dat$asin_coop <- asin(sqrt(dat$coop_frequency/100))
+dat$horizon <- 1
+dat$horizon[dat$condition %in% c(2,4)] <- -1
+dat$length <- 1
+dat$length[dat$condition %in% c(3,4)] <- -1
+dat <- subset(dat, condition != 5)
+mod0 <- afex::mixed(asin_coop ~ horizon*length + (1|u_participant) + (1|u_partner), data=dat)
+# we find a significant effect of length:
+mod0
+summary(mod0)
+
+emm0 <- emmeans::emmeans(mod0, ~ horizon*length, lmerTest.limit = 5000, pbkrtest.limit = 5000)
+# for length = 1, 
+emm0
+emmeans::contrast(emm0, method=list(test=c(-1,1,0,0)))
+```
+
+```{r control-analysis}
+dat <- dat %>%
+  mutate(missing_trust = if_else(is.na(trust), 1, 0),
+         trust = if_else(is.na(trust), 0, trust),
+         wrong_answers = wronganswer1 + wronganswer2 + wronganswer3 + wronganswer4,
+         answer_time = (endtime1 + endtime2 + endtime3 + endtime4)/4
+         )
+moda <- afex::mixed(asin_coop ~ horizon*length + age + male + economics + statistics + gametheory + risk + trust + missing_trust + factor(field) + wrong_answers + answer_time + (1|u_participant) + (1|u_partner), data=dat)
+# we find a significant effect of length:
+moda
+summary(moda)
+emma <- emmeans::emmeans(moda, ~ horizon*length, lmerTest.limit = 5000, pbkrtest.limit = 5000)
+# for length = 1, 
+emma
+emmeans::contrast(emma, method=list(test=c(-1,1,0,0)))
+
+dat$c_match <- scale(dat$match, scale=FALSE)
+dat$c_match_sq <- dat$c_match^2
+
+modb <- afex::mixed(asin_coop ~ horizon*length*(c_match + c_match_sq) + (1 + c_match + c_match_sq|u_participant) + (1 + c_match + c_match_sq|u_partner), data=dat)
+
+emmb <- emmeans::emmeans(modb, ~ horizon*length, lmerTest.limit = 5000, pbkrtest.limit = 5000)
+# for length = 1, 
+emmb
+emmeans::contrast(emmb, method=list(test=c(-1,1,0,0)))
+```
