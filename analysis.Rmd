@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(dplyr)
+# also need haven, afex
 ```
 Here, we re-analyse data to assess evidence for the following claim:
 
@@ -20,105 +21,185 @@ Here, we re-analyse data to assess evidence for the following claim:
 
 The study has a design where two groups of 24 participants are assigned to each of 5 conditions. The conditions are: Short-Deterministic, Short-Stochastic, Long-Deterministic, Long-Stochastic, and Variable-Deterministic. The latter condition is not included in most analyses, where the experiment is treated as a 2 (Length: Long, Short) by 2 (Horizon: Deterministic, Stochastic) between-subjects design. 
 
-Within each group, each participant was paired with each other participant to play 23 continuous-time Prisoner's Dilemmas. To assess the main claim, the main variable of interest is the cooperation rate, which is the proportion of time a player chooses the cooperative action. 
+Within each group, each participant was paired with each other participant to play 23 continuous-time Prisoner's Dilemma "supergames". To assess the main claim, the main variable of interest is the cooperation rate, which is the proportion of time a player chooses the cooperative action within a supergame. 
 
 # Data
 
 The supplementary materials provide several datasets. The "originals" folder contains 12 (tab delimited) excel sheets for each session. The "elaborations" folder contains processed data in `.dta` (STATA) format, and STATA scripts for the analysis. The folder "strategies" also contains processed data, and MATLAB files for analysing strategies.
 
-Although it might have been best to use the data from the "originals" folder, due to time constraints, I have chosen to use the `subjects_data_ready.dta` file in the "elaborations" folder, in the first instance. 
+Although it might have been best to use the data from the "originals" folder, due to time constraints, I have chosen to use the `data.dta` file in the "elaborations" folder, with additional use of the `subjects_data_ready.dta` file to obtain the identity of the experimental conditions. 
 
 ```{r read-data}
-# table with conditions
+# read the subjects_data_ready.dta file which contains the conditions for each session
 pdat <- haven::read_dta("replication_files/elaborations/subjects_data_ready.dta")
+# create a table with condition identities for each session
 pdat <- pdat %>%
   group_by(condition, session) %>%
   filter(row_number() == 1) %>%
   arrange(session) %>%
   select(condition, session)
-# data to use 
+# read the main data file to use 
 dat <- haven::read_dta("replication_files/elaborations/data.dta")
+# show a quick overview of this data
 head(dat)
 ```
 
-Unfortunately, there is no codebook to go along with the data, so I have to guess what the variables refer too. 
+Unfortunately, there is no clear codebook to go along with the data. The names are usually descriptive enough (and labels are provided for many variables) to guess what the variables refer too.
 
-```{processing-data}
+I have done some minimal processing of the data to (1) remove the Variable-Deterministic condition and to create unique IDs for participants and their partners in the games.
+
+```{r processing-data}
 dat <- dat %>%
   filter(treatment == 5) %>%
   mutate(session = as.numeric(factor(session)))
 
-# take condition from other file
+# take condition from the table we created earlier
 dat$condition <- pdat$condition[as.numeric(dat$session)]
-# can check correspondence by
+# we can check correspondence by
 # haven::read_dta("replication_files/elaborations/subjects_data_ready.dta") %>% group_by(condition) %>% summarise(perf = mean(coop_frequency))
 # dat %>% group_by(condition) %>% summarise(perf = mean(coop_frequency))
 
-# unique IDs
+# create unique IDs for participants and partners
 dat$u_participant <- interaction(dat$Subject, dat$session)
 dat$u_partner <- interaction(dat$partner, dat$session)
+
+# use only the first four conditions (not the Variable-Deterministic)
+dat <- subset(dat, condition != 5)
 ```
 
-# Main analysis plan
-
-I deemed a linear mixed-effects model to be the most suitable for the data, with fixed effects for game duration (short vs long) and horizon (deterministic vs stochastic). As rates of cooperation likely depend on both players in a supergame, and because we have multiple observations for both players, it makes sense to include (crossed) random effects for both. As cooperation frequency is a percentage, it seems reasonable to use an arc-sine transformation before assuming Normally distributed residuals.
-
-$$Y_{ij} = \beta_0 + \gamma_{i} + \gamma_{j} + \beta_d \texttt{duration}_i + \beta_h \texttt{horizon}_i + \beta_{dh} (\texttt{duration} \times \texttt{horizon})_i + \epsilon_{ij}$$
-where $Y_{ij}$ is the arcsine transformed cooperation rate in a game where participant $i$ plays with partner $j$ (both unique identifiers for participants over sessions), and $\gamma_i$, $\gamma_j$, and $\epsilon_{ij}$ are independently Normally distributed.
-
-I believe this model strikes a reasonable balance between simplicity and allowing for straightforward conclusions, as well as respecting the somewhat complicated design of the study. The main claim to be tested is based on a comparison within the short-duration conditions. I will use contrast analysis (with the `emmeans` package) to test for the effect of Horizon within the Short Length conditions, in order to assess this main claim. 
-
-# Additional analyses
-
-The analysis in the paper includes a large number of covariates. How some of these were measured or determined is at times not immediately obvious. For some categorical variables (e.g. _Field of study_), some levels are combined (e.g. medicine with science and engineering) without a clear justification. Some variables have missing values, which are seemingly resolved by adding "missing" as an additional level. According to Table B.II in the Supplementary Material, most of these covariates don't significantly affect the cooperation rates, although as a set these may still prove useful. As an additional analysis, I expand on the main model above by adding fixed effects for age, sex, education 
-
-
-
-To account for changes over the 23 games, we will include a linear and quadratic effect of game nr, centered on the middle game (nr 12). I will aim for a "maximal" model, which includes correlated random intercepts and slopes for the linear and quadratic effect of game by participant and by group (crossed). The fixed effects will be length (short -1, long: 1), horizon (deterministic: 1, stochastic: -1), linear game, and quadratic game, with pairwise interactions between Length, Horizon, and Game (linear or quadratic). If the model is too complex to allow for convergence, I will first remove correlations between random effects, and if this does not resolve the issue, I will remove random effects. Once a suitable random-effects model is estimated, I will use contrast analysis (with the `emmeans` package) to test for the effect of Horizon within the Short Length conditions, in order to assess the main claim. 
+Looking at the cooperation rates, we see and interesting distribution, with very low cooperation rates and very high cooperation rates more likely than medium cooperation rates:
+```{r cooperation-histogram}
+hist(dat$coop_frequency, breaks=seq(-2.5,102.5, length=20))
+```
+Cooperation rates of exactly 0% and exactly 100% occur often, and excess observations on the bound of the scale will likely cause issues for linear models.
 
 # Main analysis
 
-```{r main-analysis}
-dat$asin_coop <- asin(sqrt(dat$coop_frequency/100))
-dat$horizon <- 1
-dat$horizon[dat$condition %in% c(2,4)] <- -1
+I deemed a linear mixed-effects model to be the most suitable for the data, with fixed effects for condition. As rates of cooperation likely depend on both players in a game, and because we have multiple observations for both players, it makes sense to include (crossed) random effects for both. The fixed effects are slopes for `duration` (short -1, long: 1), `horizon` (deterministic: 1, stochastic: -1), and their interaction. The model includes random intercepts for participants and for partners. The model can be written as:
+$$\begin{align}Y_{ij} &= \beta_0 + \gamma_{i} + \gamma_{j} + \beta_d \texttt{duration}_i + \beta_h \texttt{horizon}_i + \beta_{dh} (\texttt{duration} \times \texttt{horizon})_i + \epsilon_{ij} \\
+\gamma_i &\sim \mathbf{Normal}(0, \sigma_\text{player}) \\
+\gamma_j &\sim \mathbf{Normal}(0, \sigma_\text{partner}) \\
+\epsilon_{ij} &\sim \mathbf{Normal}(0, \sigma_\epsilon) \\
+\end{align}$$
+where $Y_{ij}$ is the cooperation rate in a game where participant $i$ plays with partner $j$ (both unique identifiers for participants over sessions), and $\gamma_i$, $\gamma_j$, and $\epsilon_{ij}$ are independently Normally distributed.
+
+As cooperation rate is a percentage, there will likely be issues with the assumption of Normal distributed residuals. Although we could choose to use a _generalized_ linear mixed-effects model instead, the appropriate distribution and link function for this data is not obvious. Instead, I chose to use a Box-Cox transformation with a (maximum likelihood) estimated value for the transformation parameter $\lambda$. 
+
+I believe this model strikes a reasonable balance between simplicity and allowing for straightforward conclusions, as well as respecting the somewhat complicated design of the study. The main claim to be tested is based on a comparison within the short-duration conditions. I will use contrast analysis (with the `emmeans` package) to test for the effect of `horizon` within the short- length conditions, in order to assess this main claim.
+
+We start by fitting the model for the untransformed cooperation rates. Note that I add a small constant (.01) to all cooperation rates (percentages) to allow the later Box-Cox transformation, which requires strictly positive values.
+
+```{r main-model, cache=TRUE}
+
+# create contrast codes for duration (called length here) and horizon
+# note: condition is coded as follows:
+# 1     long-deterministic
+# 2        long-stochastic
+# 3    short-deterministic
+# 4       short-stochastic
 dat$length <- 1
 dat$length[dat$condition %in% c(3,4)] <- -1
-dat <- subset(dat, condition != 5)
-mod0 <- afex::mixed(asin_coop ~ horizon*length + (1|u_participant) + (1|u_partner), data=dat)
-# we find a significant effect of length:
+dat$horizon <- 1
+dat$horizon[dat$condition %in% c(2,4)] <- -1
+
+# estimate the model, using afex and Kenward-Roger approximation to the degrees of freedom
+mod0 <- afex::mixed(coop_frequency ~ horizon*length + (1|u_participant) + (1|u_partner), data=dat, method="KR")
+# we find a significant effect of length and duration*length interaction
 mod0
 summary(mod0)
-
+# get the estimated marginal means
 emm0 <- emmeans::emmeans(mod0, ~ horizon*length, lmerTest.limit = 5000, pbkrtest.limit = 5000)
-# for length = 1, 
 emm0
+# use contrast analysis to compare horizon within short-duration conditions
 emmeans::contrast(emm0, method=list(test=c(-1,1,0,0)))
 ```
+This model shows a significant effect of duration, `r papaja::apa_print(mod0)$full_result$length`, and a significant interaction between duration and horizon, `r papaja::apa_print(mod0)$full_result$horizon_length`. The contrast between the short-stochastic and short-deterministic condition is also significant, `r  papaja::apa_print(emmeans::contrast(emm0, method=list(test=c(-1,1,0,0))))$full_result`.
 
-```{r control-analysis}
-dat <- dat %>%
-  mutate(missing_trust = if_else(is.na(trust), 1, 0),
-         trust = if_else(is.na(trust), 0, trust),
-         wrong_answers = wronganswer1 + wronganswer2 + wronganswer3 + wronganswer4,
-         answer_time = (endtime1 + endtime2 + endtime3 + endtime4)/4
-         )
-moda <- afex::mixed(asin_coop ~ horizon*length + age + male + economics + statistics + gametheory + risk + trust + missing_trust + factor(field) + wrong_answers + answer_time + (1|u_participant) + (1|u_partner), data=dat)
-# we find a significant effect of length:
-moda
-summary(moda)
-emma <- emmeans::emmeans(moda, ~ horizon*length, lmerTest.limit = 5000, pbkrtest.limit = 5000)
-# for length = 1, 
-emma
-emmeans::contrast(emma, method=list(test=c(-1,1,0,0)))
-
-dat$c_match <- scale(dat$match, scale=FALSE)
-dat$c_match_sq <- dat$c_match^2
-
-modb <- afex::mixed(asin_coop ~ horizon*length*(c_match + c_match_sq) + (1 + c_match + c_match_sq|u_participant) + (1 + c_match + c_match_sq|u_partner), data=dat)
-
-emmb <- emmeans::emmeans(modb, ~ horizon*length, lmerTest.limit = 5000, pbkrtest.limit = 5000)
-# for length = 1, 
-emmb
-emmeans::contrast(emmb, method=list(test=c(-1,1,0,0)))
+The residuals of the model show clear deviations from Normality
+```{r diagnostic-plots-mod0}
+diag_plots_0 <- sjPlot::plot_model(mod0$full_model, 'diag')
+diag_plots_0
 ```
+
+# Zero-one-inflated Beta mixed model
+
+A main issue for the linear model above is the large number of observations on the bounds of the scale (0 and 100%). A monotone transformation will not resolve this issue. We therefore turn to a model which explicitly deals with these boundary, or extreme, observations. This model is a zero-one-inflated Beta regression model. This model effectively consists of a three submodels. First, a logistic regression model is used to analyse whether an observation is extreme (proportion of 0 or 1) or not. A second logistic regression model is used to analyse the proportion of full cooperation (proportion of 1) within these extreme proportions. The non-extreme proportions are modelled with a Beta regression model, using a logistic link function on the mean of the Beta distribution, and a log link on the dispersion of the Beta distribution.
+
+We used a Bayesian implementation through the `brms` package for R, which allows inclusion of crossed random effects for all four components: mean and dispersion of the Beta distribution, the logit of extreme events, and the logit of complete cooperation within extreme events. For convenience, we use dummy coding to code for the "fixed" effects of condition on these components, where the reference is the short-stochastic condition. 
+
+```{r create-zoi-data}
+dat$coop_prop <- dat$coop_frequency/100
+dat$dum1 <- 0
+dat$dum2 <- 0
+dat$dum3 <- 0
+dat$dum1[dat$condition == 1] <- 1
+dat$dum2[dat$condition == 2] <- 1
+dat$dum3[dat$condition == 3] <- 1
+```
+
+```{r}
+# conditional upon cooperation > 0 and < 1, the average cooperation rates in 
+# the conditions are:
+dat %>%
+  group_by(condition) %>%
+  filter(coop_prop > 0, coop_prop < 1) %>%
+  summarize(mean_coop = mean(coop_prop))
+# the proportions of extreme cooperation rates (0 or 1 exactly) are:
+dat %>%
+  group_by(condition) %>%
+  mutate(zoi = coop_prop %in% c(0,1)) %>%
+  summarize(mean_zoi = mean(zoi))
+# the proportions of cooperation rates of 1 within the extreme cooperation rates are:
+dat %>%
+  group_by(condition) %>%
+  filter(coop_prop %in% c(0,1)) %>%
+  summarize(mean_coi = mean(coop_prop))
+```
+
+The short-stochastic condition has the lowest non-extreme cooperation rate, the highest proportion of extreme cooperation rates, and within these extreme cooperation rates, the lowest proportion of 100% cooperation. 
+
+
+
+
+```{r zero-one-inflated-beta-mixed-model}
+set.seed(20220517)
+zoibeta_mod <- bf(coop_prop ~ dum1 + dum2 + dum3 + (1|u_participant) + (1|u_partner),
+          phi ~ dum1 + dum2 + dum3,
+          zoi ~ dum1 + dum2 + dum3 + (1|u_participant),
+          coi ~ dum1 + dum2 + dum3 + (1|u_participant),
+          family=zero_one_inflated_beta())
+zoibeta_fit <- brm(
+  formula = zoibeta_mod,
+  data = dat,
+  cores = 4,
+  file = "brm-zoibeta",
+  iter = 10000,
+  warmup = 8000
+)
+```
+
+```{r}
+main_h <- c("short-deterministic - short-stochastic" = "plogis(zoi_Intercept + zoi_dum3)*plogis(coi_Intercept + coi_dum3) + (1- plogis(zoi_Intercept + zoi_dum3))*plogis(Intercept + dum3) > plogis(zoi_Intercept)*plogis(coi_Intercept) + (1-plogis(zoi_Intercept))*plogis(Intercept)")
+hypothesis(zoibeta_fit, main_h)
+
+as_draws_df(zoibeta_fit, variable = "b_", regex=TRUE)[,1:4] %>%
+  mutate_at(c("b_phi_Intercept"), exp) %>% 
+  mutate_at(vars(-"b_phi_Intercept"), plogis) %>% 
+  posterior::summarise_draws() %>%
+  as.data.frame() %>% 
+  tibble::rownames_to_column("Parameter") %>% 
+  knitr::kable(digits = 2)
+
+```
+
+# Conclusion
+
+
+# Summary of analysis and results
+
+> Please report the most important steps of the analysis to the level of detail that you would provide in a methods/analysis section of a typical research article. Include any preprocessing steps that you conducted on the dataset. Describe the exact statistical hypothesis you tested and explain the reason for choosing the statistical procedure you applied. Finally, please report the result of your statistical test(s).
+
+The main claim to be tested is that, within short-duration conditions, cooperation rates are higher in the deterministic as compared to stochastic horizon condition. As the direction of this difference was not based on an a priori hypothesis, I chose to focus on a less specified hypothesis, namely that cooperation rates differ between the short-stochastic and short-deterministic condition. In the study, each of 24 participants within a session was paired with each of the remaining 23 participants to play 23 Prisoner's dilemma supergames. As cooperation rates likely depend on both players, a model with crossed random effects for participants and their partners seems suitable. The main variable of interest is the cooperation rate, determined as the proportion of time within a supergame that a participant chose the cooperation action. This variable is bounded between 0 and 1, but has many observations on these bounds, which poses problems for linear models. The data was therefore analysed with a zero-one-inflated Beta mixed-effects regression model,  including crossed random-effects for all parameters of interest, and using Bayesian estimation and inference and weakly informative prior distributions. Parameters of the model were combined to obtain posterior estimates of overall cooperation rate, and the posterior distribution of the difference between the short-deterministic and short-stochastic condition of these overall cooperation rate was used to assess the main claim. 
+
+
+To test the hypothesis that, within short-duration conditions, cooperation rates differ between deterministic and stochastic horizon treatments, a linear mixed-effects model was estimated and used in a planned-comparison analysis to compare the two relevant conditions. The dependent variable was the arc-sine transformed cooperation-rate within each supergame (proportion of time a participant chose the cooperation action). The linear mixed-effects model included fixed effects for duration, horizon, and their interaction, and crossed random intercepts for participants and their partner in each game. This model showed a significant main effect of duration. The planned contrast between the short-stochastic and short-deterministic condition was not significant, 
