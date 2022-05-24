@@ -1,8 +1,8 @@
 ---
 title: 'Multi100: Reanalysis of "Time horizon and cooperation in continuous time"'
-author: "Maarten Speekenbrink"
-date: '2022-05-12'
-output: html_document
+author: "Maarten Speekenbrink (W9XD2)"
+date: '2022-05-24'
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -73,14 +73,14 @@ hist(dat$coop_frequency, breaks=seq(-2.5,102.5, length=20))
 ```
 Cooperation rates of exactly 0% and exactly 100% occur often, and excess observations on the bound of the scale will likely cause issues for linear models.
 
-# Main analysis
+# Linear mixed-effects model
 
 I deemed a linear mixed-effects model to be the most suitable for the data, with fixed effects for condition. As rates of cooperation likely depend on both players in a game, and because we have multiple observations for both players, it makes sense to include (crossed) random effects for both. The fixed effects are slopes for `duration` (short -1, long: 1), `horizon` (deterministic: 1, stochastic: -1), and their interaction. The model includes random intercepts for participants and for partners. The model can be written as:
-$$\begin{align}Y_{ij} &= \beta_0 + \gamma_{i} + \gamma_{j} + \beta_d \texttt{duration}_i + \beta_h \texttt{horizon}_i + \beta_{dh} (\texttt{duration} \times \texttt{horizon})_i + \epsilon_{ij} \\
+$$\begin{aligned}Y_{ij} &= \beta_0 + \gamma_{i} + \gamma_{j} + \beta_d \texttt{duration}_i + \beta_h \texttt{horizon}_i + \beta_{dh} (\texttt{duration} \times \texttt{horizon})_i + \epsilon_{ij} \\
 \gamma_i &\sim \mathbf{Normal}(0, \sigma_\text{player}) \\
 \gamma_j &\sim \mathbf{Normal}(0, \sigma_\text{partner}) \\
-\epsilon_{ij} &\sim \mathbf{Normal}(0, \sigma_\epsilon) \\
-\end{align}$$
+\epsilon_{ij} &\sim \mathbf{Normal}(0, \sigma_\epsilon)
+\end{aligned}$$
 where $Y_{ij}$ is the cooperation rate in a game where participant $i$ plays with partner $j$ (both unique identifiers for participants over sessions), and $\gamma_i$, $\gamma_j$, and $\epsilon_{ij}$ are independently Normally distributed.
 
 As cooperation rate is a percentage, there will likely be issues with the assumption of Normal distributed residuals. Although we could choose to use a _generalized_ linear mixed-effects model instead, the appropriate distribution and link function for this data is not obvious. Instead, I chose to use a Box-Cox transformation with a (maximum likelihood) estimated value for the transformation parameter $\lambda$. 
@@ -123,23 +123,11 @@ diag_plots_0
 
 # Zero-one-inflated Beta mixed model
 
-A main issue for the linear model above is the large number of observations on the bounds of the scale (0 and 100%). A monotone transformation will not resolve this issue. We therefore turn to a model which explicitly deals with these boundary, or extreme, observations. This model is a zero-one-inflated Beta regression model. This model effectively consists of a three submodels. First, a logistic regression model is used to analyse whether an observation is extreme (proportion of 0 or 1) or not. A second logistic regression model is used to analyse the proportion of full cooperation (proportion of 1) within these extreme proportions. The non-extreme proportions are modelled with a Beta regression model, using a logistic link function on the mean of the Beta distribution, and a log link on the dispersion of the Beta distribution.
-
-We used a Bayesian implementation through the `brms` package for R, which allows inclusion of crossed random effects for all four components: mean and dispersion of the Beta distribution, the logit of extreme events, and the logit of complete cooperation within extreme events. For convenience, we use dummy coding to code for the "fixed" effects of condition on these components, where the reference is the short-stochastic condition. 
-
-```{r create-zoi-data}
-dat$coop_prop <- dat$coop_frequency/100
-dat$dum1 <- 0
-dat$dum2 <- 0
-dat$dum3 <- 0
-dat$dum1[dat$condition == 1] <- 1
-dat$dum2[dat$condition == 2] <- 1
-dat$dum3[dat$condition == 3] <- 1
-```
-
+A main issue for the linear model above is the large number of observations on the bounds of the scale (0 and 100%). 
 ```{r}
 # conditional upon cooperation > 0 and < 1, the average cooperation rates in 
 # the conditions are:
+dat$coop_prop <- dat$coop_frequency/100
 dat %>%
   group_by(condition) %>%
   filter(coop_prop > 0, coop_prop < 1) %>%
@@ -155,51 +143,124 @@ dat %>%
   filter(coop_prop %in% c(0,1)) %>%
   summarize(mean_coi = mean(coop_prop))
 ```
+The short-stochastic condition has (1) the lowest non-extreme cooperation rate, (2) the highest proportion of extreme cooperation rates, and within these extreme cooperation rates, (3) the lowest proportion of 100% cooperation. Whilst (1) and (3) are consistent with the hypothesis, (2) indicates that there is potentially also a higher rate of %100 cooperation in this condition:
+```{r}
+dat %>%
+  group_by(condition, coop_prop) %>%
+  summarize(n = n()) %>%
+  mutate(prop = n/sum(n)) %>%
+  filter(coop_prop == 1)
+```
+Whilst the proportion of %100 cooperation is highest in the long-stochastic condition, the short-stochastic condition is a close second, and both are far removed from the deterministic conditions.
 
-The short-stochastic condition has the lowest non-extreme cooperation rate, the highest proportion of extreme cooperation rates, and within these extreme cooperation rates, the lowest proportion of 100% cooperation. 
+There seem to be clear disparities between the conditions on the scores on the bounds of the scale. A monotone transformation will not resolve this issue. We therefore turn to a model which explicitly deals with these boundaries (or extreme) observations. This model is a zero-one-inflated Beta regression model. This model effectively consists of a three submodels: (1) a logistic regression model is used to analyse whether an observation is extreme (proportion of 0 or 1) or not, (2) a logistic regression model is used to analyse the proportion of full cooperation (proportion of 1) within these extreme proportions, and (3) the non-extreme proportions are modelled with a Beta regression model, using a logistic link function on the mean of the Beta distribution, and a log link on the dispersion of the Beta distribution.
 
+We used a Bayesian implementation through the `brms` package in `R`, which allows inclusion of crossed random effects.  for all four components: mean and dispersion of the Beta distribution, the logit of extreme events, and the logit of complete cooperation within extreme events. For convenience, we use dummy coding to code for the "fixed" effects of condition on these components, where the reference is the short-stochastic condition.
 
+Let $\alpha_{ij}$ and $\beta_{ij}$ denote the parameters of the Beta distribution of the non-extreme cooperation rate for participant $i$ playing with partner $j$, $\pi_{ij}$ the probability of an extreme rate (of 1 or 0), and $\gamma_{ij}$ the conditional probability of 100% cooperation given an extreme cooperation rate.
+$$p(c_{ij}) = \begin{cases}  \pi_{ij} \gamma_{ij} & c_{ij} = 1 \\ \pi_{ij} (1-\gamma_{ij}) & c_{ij} = 0 \\ (1-\pi_{ij})\text{Beta}(\alpha_{ij}, \beta_{ij}) & 0 < c_{ij} < 1 \end{cases}$$
+Letting $X_{1,i}$, $X_{2,i}$, and $X_{3,i}$ denote the dummy variables encoding condition, we model the parameters above as:
+$$\begin{aligned} \text{logit}\left(\frac{\alpha_{ij}}{\alpha_{ij} + \beta_{ij}}\right) &= b_{1,0} + b_{1,1} X_{1,i} + b_{1,2} X_{2,i} + b_{1,3} X_{3,i} + u_{1,i} + u_{1,j} \\ 
+\text{log}\left(\alpha_{ij} + \beta_{ij}\right) &= b_{2,0} + b_{2,1} X_{1,i} + b_{2,2} X_{2,i} + b_{2,3} X_{3,i} \\ 
+\text{logit}(\pi_{ij}) &= b_{3,0} + b_{3,1} X_{1,i} + b_{3,2} X_{2,i} + b_{3,3} X_{3,i} + u_{3,i} + u_{3,j}  \\
+\text{logit}(\gamma_{ij}) &= b_{4,0} + b_{4,1} X_{1,i} + b_{4,2} X_{2,i} + b_{4,3} X_{3,i} + u_{4,i} + u_{4,j} \\
+u_{1i} &\sim \text{Normal}(0,\sigma_{11}) \\
+u_{1j} &\sim \text{Normal}(0,\sigma_{12}) \\
+u_{3i} &\sim \text{Normal}(0,\sigma_{31}) \\
+u_{3j} &\sim \text{Normal}(0,\sigma_{32}) \\
+u_{4i} &\sim \text{Normal}(0,\sigma_{41}) \\ 
+u_{4j} &\sim \text{Normal}(0,\sigma_{42}) \end{aligned}$$
+Dummy regressors to compare the Short-Stochastic condition to the other conditions were computed as follows:
+```{r create-zoi-data}
+dat$dum1 <- 0
+dat$dum2 <- 0
+dat$dum3 <- 0
+dat$dum1[dat$condition == 1] <- 1
+dat$dum2[dat$condition == 2] <- 1
+dat$dum3[dat$condition == 3] <- 1
+```
 
-
+The model was defined and estimated as follows (sampling 2000 values for each of 4 chains after a burnin period of 8000 iterations):
 ```{r zero-one-inflated-beta-mixed-model}
-set.seed(20220517)
+library(brms)
+set.seed(20220520)
 zoibeta_mod <- bf(coop_prop ~ dum1 + dum2 + dum3 + (1|u_participant) + (1|u_partner),
           phi ~ dum1 + dum2 + dum3,
-          zoi ~ dum1 + dum2 + dum3 + (1|u_participant),
-          coi ~ dum1 + dum2 + dum3 + (1|u_participant),
+          zoi ~ dum1 + dum2 + dum3 + (1|u_participant) + (1|u_partner),
+          coi ~ dum1 + dum2 + dum3 + (1|u_participant) + (1|u_partner),
           family=zero_one_inflated_beta())
+
 zoibeta_fit <- brm(
   formula = zoibeta_mod,
   data = dat,
   cores = 4,
   file = "brm-zoibeta",
   iter = 10000,
-  warmup = 8000
+  warmup = 8000,
+  sample_prior = "yes"
 )
 ```
-
+Note that the default weakly informative priors of the `brms` package were used for all parameters. These priors are flat improper priors for the regression coefficients, half Student t-distributions (with df=3 and scale 2.5, truncated from below at 0) for the standard deviation of the random effects and for the intercept of the Beta distributions, and logistic distributions with mean 0 and scale 1 for the intercept of the zero-one inflations:
 ```{r}
-main_h <- c("short-deterministic - short-stochastic" = "plogis(zoi_Intercept + zoi_dum3)*plogis(coi_Intercept + coi_dum3) + (1- plogis(zoi_Intercept + zoi_dum3))*plogis(Intercept + dum3) > plogis(zoi_Intercept)*plogis(coi_Intercept) + (1-plogis(zoi_Intercept))*plogis(Intercept)")
-hypothesis(zoibeta_fit, main_h)
+prior_summary(zoibeta_fit)
+```
+The posterior parameter distributions and traceplots are:
+```{r}
+plot(zoibeta_fit, ask = FALSE)
+```
+There is no clear indication of convergence issues (e.g. RHat values are all very close to 1). 
+```{r}
+summary(zoibeta_fit)
+```
+With regards to differences between the Short-Deterministic and Short-Stochastic condition (the effects of `dum3`), we see that the non-extreme cooperation rates are higher in the former condition (`dum3` is negative), with less variability (`phi_dum3` is negative). The probability of an extreme cooperation rate is also lower in the Short-Deterministic condition (`zoi_dum3` is negative), but there is no evidence that conditional probability of 100% cooperation differs between the conditions (the 95% credible interval for `coi_dum3` includes 0). 
 
-as_draws_df(zoibeta_fit, variable = "b_", regex=TRUE)[,1:4] %>%
-  mutate_at(c("b_phi_Intercept"), exp) %>% 
-  mutate_at(vars(-"b_phi_Intercept"), plogis) %>% 
-  posterior::summarise_draws() %>%
-  as.data.frame() %>% 
-  tibble::rownames_to_column("Parameter") %>% 
-  knitr::kable(digits = 2)
-
+The main hypothesis to be tested can be written as follows:
+$$H_0: \pi_\text{SD} \gamma_\text{SD} + (1-\pi_\text{SD}) \frac{\alpha_\text{SD}}{\alpha_\text{SD} + \beta_\text{SD}} = \pi_\text{SS} \gamma_\text{SS} + (1-\pi_\text{SS}) \frac{\alpha_\text{SS}}{\alpha_\text{SS} + \beta_\text{SS}}$$
+and performed using the following code:
+```{r main-hypothesis-test}
+main_h <- c("short-deterministic - short-stochastic" = "plogis(zoi_Intercept + zoi_dum3)*plogis(coi_Intercept + coi_dum3) + (1- plogis(zoi_Intercept + zoi_dum3))*plogis(Intercept + dum3) = plogis(zoi_Intercept)*plogis(coi_Intercept) + (1-plogis(zoi_Intercept))*plogis(Intercept)")
+hypothesis(zoibeta_fit, main_h, seed = 20220524)
+```
+This shows that the 95% credible interval contains 0, and hence the hypothesis of equality between the conditions is not rejected. The posterior distribution of the difference is shown in the plot below:
+```{r}
+plot(hypothesis(zoibeta_fit, main_h, seed = 20220524))
 ```
 
+Whilst the non-extreme cooperation rates are higher in the Short-Deterministic condition:
+```{r}
+main_h2 <- c("short-deterministic - short-stochastic" = "plogis(Intercept + dum3) = plogis(Intercept)")
+hypothesis(zoibeta_fit, main_h2, seed = 20220524)
+```
+because the probability of an extreme cooperation rate is higher in the Short-Stochastic condition
+```{r}
+main_h3 <- c("short-deterministic - short-stochastic" = "plogis(zoi_Intercept + zoi_dum3) = plogis(zoi_Intercept)")
+hypothesis(zoibeta_fit, main_h3, seed = 20220524)
+```
+with no clear difference in the conditional probability of 100% cooperation
+```{r}
+main_h4 <- c("short-deterministic - short-stochastic" = "plogis(coi_Intercept + coi_dum3) = plogis(coi_Intercept)")
+hypothesis(zoibeta_fit, main_h4, seed = 20220524)
+```
+it appears the decrease in non-extreme cooperation rates is countered by the increase in extreme (100%) cooperation rates:
+```{r}
+main_h5 <- c("short-deterministic - short-stochastic" = "plogis(zoi_Intercept + zoi_dum3)*plogis(coi_Intercept + coi_dum3) = plogis(zoi_Intercept)*plogis(coi_Intercept)")
+hypothesis(zoibeta_fit, main_h5, seed = 20220524)
+```
+
+Note that, to check the robustness of the results, the analysis was repeated with a model where the flat improper priors for the intercepts and regression coefficients were replaced by Normal distributions with a standard deviation of 5. The results were qualitatively similar, and no evidence was found for the main claim.
+
 # Conclusion
+
+Using a zero-one-inflated Beta regression model with crossed random effects for participants and partners, we found no evidence for the claim that cooperation rates are higher in the Short-Deterministic as compared to the Short-Stochastic condition.
 
 
 # Summary of analysis and results
 
 > Please report the most important steps of the analysis to the level of detail that you would provide in a methods/analysis section of a typical research article. Include any preprocessing steps that you conducted on the dataset. Describe the exact statistical hypothesis you tested and explain the reason for choosing the statistical procedure you applied. Finally, please report the result of your statistical test(s).
 
-The main claim to be tested is that, within short-duration conditions, cooperation rates are higher in the deterministic as compared to stochastic horizon condition. As the direction of this difference was not based on an a priori hypothesis, I chose to focus on a less specified hypothesis, namely that cooperation rates differ between the short-stochastic and short-deterministic condition. In the study, each of 24 participants within a session was paired with each of the remaining 23 participants to play 23 Prisoner's dilemma supergames. As cooperation rates likely depend on both players, a model with crossed random effects for participants and their partners seems suitable. The main variable of interest is the cooperation rate, determined as the proportion of time within a supergame that a participant chose the cooperation action. This variable is bounded between 0 and 1, but has many observations on these bounds, which poses problems for linear models. The data was therefore analysed with a zero-one-inflated Beta mixed-effects regression model,  including crossed random-effects for all parameters of interest, and using Bayesian estimation and inference and weakly informative prior distributions. Parameters of the model were combined to obtain posterior estimates of overall cooperation rate, and the posterior distribution of the difference between the short-deterministic and short-stochastic condition of these overall cooperation rate was used to assess the main claim. 
+The main claim to be tested is that, within the short-duration conditions, cooperation rates are higher in the deterministic as compared to stochastic horizon condition. As the direction of this difference was not based on an a priori hypothesis, I chose to focus on a less specified hypothesis, namely that cooperation rates differ between the short-stochastic and short-deterministic condition. In the study, each of 24 participants within a session was paired with each of the remaining 23 participants to play 23 Prisoner's dilemma supergames. As cooperation rates likely depend on both players, a model with crossed random effects for participants and their partners seems suitable. The main variable of interest is the cooperation rate, determined as the proportion of time within a supergame that a participant chose the cooperation action. This variable is bounded between 0 and 1, but has many observations on these bounds, which poses problems for linear models. The data was therefore analysed with a zero-one-inflated Beta mixed-effects regression model, including crossed random-effects for the non-extreme cooperation rates, the probability of extreme cooperation rates and the conditional probability of 100% cooperation. The model was estimated in a Bayesian framework, using the brms package for R and using default uninformative and weakly informative prior distributions. Parameters of the model were combined to obtain posterior estimates of overall cooperation rate in the conditions, and the posterior distribution of the difference between the short-deterministic and short-stochastic condition of these overall cooperation rates was used to assess the main claim. The 95% credible interval of this posterior distribution is $[-0.04, 0.15]$ and includes 0, so the main claim is not supported.
 
 
-To test the hypothesis that, within short-duration conditions, cooperation rates differ between deterministic and stochastic horizon treatments, a linear mixed-effects model was estimated and used in a planned-comparison analysis to compare the two relevant conditions. The dependent variable was the arc-sine transformed cooperation-rate within each supergame (proportion of time a participant chose the cooperation action). The linear mixed-effects model included fixed effects for duration, horizon, and their interaction, and crossed random intercepts for participants and their partner in each game. This model showed a significant main effect of duration. The planned contrast between the short-stochastic and short-deterministic condition was not significant, 
+```{r}
+sessionInfo()
+```

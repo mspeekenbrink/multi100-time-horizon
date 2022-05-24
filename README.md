@@ -1,1 +1,5 @@
 # multi100-time-horizon
+
+This repository contains a re-analysis of Bigoni, M., Casari, M., Skrypacz, A., & Spagnolo, G. (2015). Time horizon and cooperation in continuous time. _Econometrica_, _83_, 587–616. This was conducted for the Multi100 project (https://osf.io/7snkz/). The data used was downloaded from an OSF repository made available for this project, but can also be downloaded as supplementary material here: https://www.econometricsociety.org/publications/econometrica/2015/03/01/time-horizon-and-cooperation-continuous-time
+
+The assignment was to test the claim in the paper that _"in the short duration treatments, cooperation rates are significantly higher with a deterministic horizon than with a stochastic horizon (p 596)"_. As the cooperation rates are bounded between 0 and 1 and have a rather substantial number of observations on these bounds, I settled on an analysis via a zero-one inflated mixed-effects Beta regression model, relying on Bayesian estimation via the `brms` package in R. The results of this re-analysis do not support the above claim. 
