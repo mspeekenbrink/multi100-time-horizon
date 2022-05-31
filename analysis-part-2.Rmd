@@ -1,0 +1,159 @@
+---
+title: 'Multi100: Reanalysis of "Time horizon and cooperation in continuous time - Task 2"'
+author: "Maarten Speekenbrink (W9XD2)"
+date: '2022-05-31'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+# also need haven, afex
+```
+Here, we re-analyse data to assess evidence for the following claim:
+
+> ...in the short duration treatments, cooperation rates are significantly higher with a deterministic horizon than with a stochastic horizon (p 596)
+
+The instructions for this part of the Multi100 project were
+
+> In Task 2, we ask you to conduct and report one additional analysis using the same dataset testing the same claim, but following these instructions:
+
+> Your analysis should produce a single, main result in terms of statistical families of z-, t-, F-, or x² tests (or their alternative or non-parametric versions).
+
+> You should control for individual differences of the participants in your analysis.
+
+Details of the study and dataset can be found in my report of Part 1 of this analysis. 
+
+# Part 2 analysis
+
+As the request is to (1) control for individual differences and (2) arrive at a single statistic from a family of parametric tests, I will use a linear mixed-effects model, as I did in the preliminary analysis of Part 1. Given the nature of the main variable of interest (bounded between 0 and 1 with a large number of observations on these bounds), this is not ideal. 
+
+```{r read-data}
+# read the subjects_data_ready.dta file which contains the conditions for each session
+pdat <- haven::read_dta("replication_files/elaborations/subjects_data_ready.dta")
+# create a table with condition identities for each session
+pdat <- pdat %>%
+  group_by(condition, session) %>%
+  filter(row_number() == 1) %>%
+  arrange(session) %>%
+  select(condition, session)
+# read the main data file to use 
+dat <- haven::read_dta("replication_files/elaborations/data.dta")
+# show a quick overview of this data
+dat <- dat %>%
+  filter(treatment == 5) %>%
+  mutate(session = as.numeric(factor(session)))
+
+# take condition from the table we created earlier
+dat$condition <- pdat$condition[as.numeric(dat$session)]
+# we can check correspondence by
+# haven::read_dta("replication_files/elaborations/subjects_data_ready.dta") %>% 
+#   group_by(condition) %>% summarise(perf = mean(coop_frequency))
+# dat %>% group_by(condition) %>% summarise(perf = mean(coop_frequency))
+
+# create unique IDs for participants and partners
+dat$u_participant <- interaction(dat$Subject, dat$session)
+dat$u_partner <- interaction(dat$partner, dat$session)
+
+# use only the first four conditions (not the Variable-Deterministic)
+dat <- subset(dat, condition != 5)
+
+# create dummy variables for condition, comparing against short-stochastic (condition 4)
+dat$dum1 <- 0
+dat$dum2 <- 0
+dat$dum3 <- 0
+dat$dum1[dat$condition == 1] <- 1
+dat$dum2[dat$condition == 2] <- 1
+dat$dum3[dat$condition == 3] <- 1
+```
+
+# Linear mixed-effects model
+
+I deemed a linear mixed-effects model to be the most suitable for the data, with fixed effects for condition. As rates of cooperation likely depend on both players in a game, and because we have multiple observations for both players, it makes sense to include (crossed) random effects for both. The fixed effects are slopes for `duration` (short -1, long: 1), `horizon` (deterministic: 1, stochastic: -1), and their interaction. The model includes random intercepts for participants and for partners. The model can be written as:
+$$\begin{aligned}Y_{ij} &= \beta_0 + \gamma_{i} + \gamma_{j} + \beta_1 D_{1,i} + \beta_2 D_{2,i} + \beta_{3} D_{3,i} + \ldots + \epsilon_{ij} \\
+\gamma_i &\sim \mathbf{Normal}(0, \sigma_\text{player}) \\
+\gamma_j &\sim \mathbf{Normal}(0, \sigma_\text{partner}) \\
+\epsilon_{ij} &\sim \mathbf{Normal}(0, \sigma_\epsilon)
+\end{aligned}$$
+where $Y_{ij}$ is the cooperation rate in a game where participant $i$ plays with partner $j$ (both unique identifiers for participants over sessions), and $\gamma_i$, $\gamma_j$, and $\epsilon_{ij}$ are independently Normally distributed. A number of additional covariates was included to control for individual differences:
+
+* age (in years)
+* male (1 male, 0 female)
+* economics (dummy indicating experience with economics)
+* statistics (dummy indicating experience with statistics)
+* gametheory (dummy indicating experience with game theory)
+* risk (value between 1 and 10 indicating risk preference)
+* logic1 (binary variable indicating performance on an "IQ" test)
+* logic2 (binary variable indicating performance on an "IQ" test)
+
+Due to a large number of missing values, `trust` (a binary variable indicating general trust), was not included. Note that the main claim to be tested can be assessed with the effect of `dum3`.
+
+```{r main-model, cache=TRUE}
+# estimate the model, using afex and Kenward-Roger approximation to the degrees of freedom
+mod0 <- afex::mixed(coop_frequency ~ dum1 + dum2 + dum3 + age + male + economics + 
+                      statistics + gametheory + risk + logic1 + logic2 +
+                      (1|u_participant) + (1|u_partner), 
+                    data=dat, method="KR")
+# we find a significant effect of length and duration*length interaction
+mod0
+summary(mod0)
+
+```
+This model shows a significant effect of `dum3` in the expected direction (higher cooperation for the Short-Deterministic than for the Short-Stochastic condition. However, it should be noted that the residuals of the model show clear deviations from Normality
+```{r diagnostic-plots-mod0}
+diag_plots_0 <- sjPlot::plot_model(mod0$full_model, 'diag')
+diag_plots_0
+```
+
+## Robustness checks
+
+I ran two additional analyses to check the robustness of the results above. The first is an attempt to transform the dependent variable (using a Box-Cox transformation) to obtain better distributed residuals. The second removes the additional covariates, controlling for individual differences only via the random intercepts. In both cases, we still find evidence for the claim, although the effect is less strong after Box-Cox transformation.
+
+### Box-Cox transformation:
+
+```{r box-cox-model, cache=TRUE}
+bct <- car::powerTransform(mod0$full_model, family="bcnPower", verbose=TRUE)
+dat$coop_frequency_t <- car::bcnPower(dat$coop_frequency, lambda = bct$lambda, 
+                                      gamma = bct$gamma)
+# estimate the model, using afex and Kenward-Roger approximation to the degrees of freedom
+mod1 <- afex::mixed(coop_frequency_t ~ dum1 + dum2 + dum3 + age + male + economics + 
+                      statistics + gametheory + risk + logic1 + logic2 + 
+                      (1|u_participant) + (1|u_partner), 
+                    data=dat, method="KR")
+mod1
+summary(mod1)
+```
+Unfortunately, the distribution of residuals still leaves a lot to be desired. This is a main reason why I moved to a zero-one-inflated Beta regression model in Task 1:
+```{r diagnostic-plots-mod1}
+diag_plots_1 <- sjPlot::plot_model(mod1$full_model, 'diag')
+diag_plots_1
+```
+
+### Without additional covariates
+
+```{r simple-model}
+mod2 <- afex::mixed(coop_frequency ~ dum1 + dum2 + dum3 + 
+                      (1|u_participant) + (1|u_partner), 
+                    data=dat, method="KR")
+# we find a significant effect of length and duration*length interaction
+mod2
+summary(mod2)
+```
+
+# Conclusion
+
+Using a linear mixed-effects model with crossed random effects for participants and partners and also controlling for individual differences with a number of additional covariates, we find a significant difference between the short-deterministic and short-stochastic condition, `r papaja::apa_print(mod0)$full_result$dum3`. After controlling for a number of covariates, cooperation rates are estimated to be higher in the Short-Deterministic as compared to the Short-Stochastic condition, `r papaja::apa_print(mod0$full_model)$estimate$dum3` (note values are in the scale of percentage cooperation rates).
+
+# Summary of analysis and results
+
+> Please report the most important steps of the analysis to the level of detail that you would provide in a methods/analysis section of a typical research article. Include any preprocessing steps that you might have conducted on the dataset. Describe the exact hypothesis you tested and explain the reason for choosing the statistical procedure you applied. Finally, please report the result of your statistical test. Please also describe the steps you took in order to satisfy the specific instructions of Task 2.
+
+The main claim to be tested is that, within the short-duration conditions, cooperation rates are higher in the deterministic as compared to stochastic horizon condition. As the direction of this difference was not based on an a priori hypothesis, I chose to focus on a less specified hypothesis, namely that cooperation rates differ between the short-stochastic and short-deterministic condition. In the study, each of 24 participants within a session was paired with each of the remaining 23 participants to play 23 Prisoner's dilemma supergames. As cooperation rates likely depend on both players, a model with crossed random effects for participants and their partners seems suitable. The main variable of interest is the cooperation rate, determined as the proportion of time within a supergame that a participant chose the cooperation action. This variable is bounded between 0 and 1, but has many observations on these bounds, which poses problems for linear models. An appropriate model for such data is a zero-one-inflated Beta regression model. However, the results of such a model will not allow for using a single "standard" (e.g. t or F) statistic, which was required for Task 2. The data was therefore analysed with a linear mixed-effects regression model, including crossed random intercepts for participants and partners, and a number of additional covariates (age, gender, experience with economics, statistics, and game theory, risk preference, and performance on two IQ questions) to control for individual differences between participants. Whilst controlling for the covariates, a significant difference was found between the Short-Deterministic and Short-Stochastic condition (F(1, 295.43) = 6.92, p = .009), with the estimated cooperation rate being 11.70% higher in the Short-Deterministic condition. Hence, the results of this analysis show support for the claim. However, there is sufficient reason to suspect the assumptions of this analysis are violated, and it is questionable whether the simple average of cooperation frequencies provides a good description of the differences between conditions. The additional steps taken in this analysis were (1) the addition of more covariates to control for individual differences, and (2) use of a more standard analysis to obtain a more standard statistic.
+
+
+```{r}
+sessionInfo()
+```
